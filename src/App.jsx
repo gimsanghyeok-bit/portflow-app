@@ -104,7 +104,7 @@ function Donut({ slices, size = 170 }) {
 
 export default function App() {
   const [tab, setTab] = useState("home");
-  const [holdings, setHoldings] = useState(DEMO);
+  const [holdings, setHoldings] = useState([]);
   const [targets, setTargets] = useState(DEFAULT_TARGETS);
   const [fx, setFx] = useState(1340);
   const [driftTol, setDriftTol] = useState(5);
@@ -165,7 +165,7 @@ export default function App() {
   const resetAll = async () => {
     if (!confirm("저장된 모든 데이터를 삭제하고 데모 데이터로 초기화할까요?")) return;
     try { await storage.delete(STORAGE_KEY); } catch (e) {}
-    setHoldings(DEMO);
+    setHoldings([]);
     setTargets(DEFAULT_TARGETS);
     setFx(1340);
     setDriftTol(5);
