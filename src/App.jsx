@@ -375,24 +375,17 @@ JSON만 반환 (마크다운 없이):
           <div className="fade">
             <div style={S.pageTitle}>보유 현황 업로드</div>
             <div style={S.pageSub}>증권사 캡처 이미지 → Vision OCR 자동 파싱</div>
-
-            {ocrStatus === "idle" && (
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
-                <button style={S.srcCard} onClick={()=>fileRef.current?.click()}>
-                  <span style={{fontSize:34}}>🖼</span>
-                  <div style={S.srcTitle}>이미지 선택</div>
-                  <div style={S.srcSub}>갤러리 / 파일</div>
-                </button>
-                <button style={S.srcCard} onClick={()=>{ setParsed(DEMO); setOcrStatus("done"); }}>
-                  <span style={{fontSize:34}}>📊</span>
-                  <div style={S.srcTitle}>데모 데이터</div>
-                  <div style={S.srcSub}>샘플로 테스트</div>
-                </button>
-                <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}}
-                  onChange={e=>handleFile(e.target.files?.[0])} />
-              </div>
-            )}
-
+{ocrStatus === "idle" && (
+  <div>
+    <button style={{...S.srcCard, width:"100%"}} onClick={()=>fileRef.current?.click()}>
+      <span style={{fontSize:34}}>🖼</span>
+      <div style={S.srcTitle}>이미지 선택</div>
+      <div style={S.srcSub}>갤러리 / 파일</div>
+    </button>
+    <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}}
+      onChange={e=>handleFile(e.target.files?.[0])} />
+  </div>
+)}
             {ocrStatus === "parsing" && (
               <div style={{...S.card, textAlign:"center", display:"flex", flexDirection:"column", alignItems:"center", gap:12}}>
                 <div className="spin"/>
