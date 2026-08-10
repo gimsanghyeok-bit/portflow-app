@@ -12,9 +12,17 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "ANTHROPIC_API_KEY not configured on server" });
   }
 
-  const { system, messages, max_tokens } = req.body;
+  const { system, messages, max_tokens, tools } = req.body;
 
   try {
+    const body = {
+      model: "claude-sonnet-4-6",
+      max_tokens: max_tokens || 1000,
+      system,
+      messages,
+    };
+    if (tools) body.tools = tools;
+
     const resp = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -22,12 +30,7 @@ export default async function handler(req, res) {
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: max_tokens || 1000,
-        system,
-        messages,
-      }),
+      body: JSON.stringify(body),
     });
 
     const data = await resp.json();

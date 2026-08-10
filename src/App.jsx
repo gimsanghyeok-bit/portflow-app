@@ -13,14 +13,20 @@ const storage = {
   async delete(key) { localStorage.removeItem(key); return { key, deleted: true }; },
 };
 
-async function callClaude({ system, messages, max_tokens = 1000 }) {
+async function callClaude({ system, messages, max_tokens = 1000, tools }) {
   const resp = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ system, messages, max_tokens }),
+    body: JSON.stringify({ system, messages, max_tokens, ...(tools ? { tools } : {}) }),
   });
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
+}
+
+// 웹 검색 도구를 쓰면 응답에 text 블록이 여러 개로 나뉘어 오므로 전부 이어붙임
+function extractText(data) {
+  const blocks = (data.content || []).filter(c => c.type === "text").map(c => c.text);
+  return blocks.join("\n") || "{}";
 }
 
 // AI 응답에 설명 문구가 섞이거나 잘려도 최대한 파싱을 시도
@@ -151,6 +157,7 @@ export default function App() {
   const [newsText, setNewsText] = useState("");
   const [newsLoading, setNewsLoading] = useState(false);
   const [newsResult, setNewsResult] = useState(null);
+  const [newsSource, setNewsSource] = useState(null); // "auto" | null
   const [expanded, setExpanded] = useState(null);
 
   // 갈아타기 제안
@@ -261,10 +268,10 @@ export default function App() {
     setOcrStatus("done");
   }, []);
 
-  // ── 시황 분석 ──
+  // ── 시황 분석 (직접 입력) ──
   const analyzeNews = async () => {
     if (!newsText.trim()) return;
-    setNewsLoading(true); setNewsResult(null);
+    setNewsLoading(true); setNewsResult(null); setNewsSource(null);
     try {
       const systemPrompt = `당신은 한국 주식시장(코스피/코스닥) 전문 포트폴리오 매니저 AI입니다.
 ★ 절대 규칙: ① 추천은 코스피200 구성 또는 시총 상위 우량주만 ② 소형주·테마주·작전주·급등주 배제 ③ 투기적 표현 금지 ④ 종목명은 한국거래소 정식 명칭 ⑤ 단정적 예측 금지, 근거 중심 서술
@@ -272,8 +279,29 @@ JSON만 반환 (마크다운 없이):
 {"summary":"3문장 요약","macro":"거시경제 영향","sentiment":"bullish|neutral|bearish","leaders":[{"theme":"","reason":""}],"sectorImpact":[{"sector":"","impact":"positive|negative|neutral","reason":""}],"bluechipRecs":[{"ticker":"","name":"","reason":"","category":"대형주|우량주|배당성장주","marketCap":""}],"risks":["",""],"portfolioAction":""}`;
       const data = await callClaude({ system: systemPrompt, max_tokens: 1800,
         messages: [{ role:"user", content: newsText }] });
-      const raw = data.content?.find(c => c.type === "text")?.text ?? "{}";
-      setNewsResult(safeParseJSON(raw));
+      setNewsResult(safeParseJSON(extractText(data)));
+    } catch (e) { setNewsResult(null); }
+    setNewsLoading(false);
+  };
+
+  // ── 오늘 시황 자동 분석 (웹 검색 도구 사용) ──
+  const autoFetchNews = async () => {
+    setNewsLoading(true); setNewsResult(null); setNewsSource(null);
+    try {
+      const today = new Date().toLocaleDateString("ko-KR", { year:"numeric", month:"long", day:"numeric" });
+      const systemPrompt = `당신은 한국 주식시장(코스피/코스닥) 전문 포트폴리오 매니저 AI입니다. 웹 검색 도구로 오늘(${today}) 한국 증시 관련 최신 뉴스를 직접 찾아서 분석하세요.
+★ 검색 지침: 코스피/코스닥 마감·수급 동향, 한국은행/금통위, 환율, 반도체·2차전지·바이오 등 주요 섹터 뉴스를 검색할 것.
+★ 절대 규칙: ① 추천은 코스피200 구성 또는 시총 상위 우량주만 ② 소형주·테마주·작전주·급등주 배제 ③ 투기적 표현 금지 ④ 종목명은 한국거래소 정식 명칭 ⑤ 단정적 예측 금지, 근거 중심 서술 ⑥ 검색으로 찾은 실제 뉴스에 기반해서만 작성 (추측 금지)
+검색과 분석이 끝나면, 다른 설명 없이 아래 JSON 형식만 마지막에 반환하세요 (마크다운 없이):
+{"summary":"오늘 시황 3문장 요약","macro":"거시경제 영향","sentiment":"bullish|neutral|bearish","leaders":[{"theme":"","reason":""}],"sectorImpact":[{"sector":"","impact":"positive|negative|neutral","reason":""}],"bluechipRecs":[{"ticker":"","name":"","reason":"","category":"대형주|우량주|배당성장주","marketCap":""}],"risks":["",""],"portfolioAction":""}`;
+      const data = await callClaude({
+        system: systemPrompt, max_tokens: 2200,
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        messages: [{ role:"user", content: "오늘 한국 증시 시황을 검색해서 위 형식에 맞게 분석해주세요." }],
+      });
+      setNewsResult(safeParseJSON(extractText(data)));
+      setNewsSource("auto");
+      setNewsText("");
     } catch (e) { setNewsResult(null); }
     setNewsLoading(false);
   };
@@ -985,6 +1013,17 @@ JSON만 반환 (마크다운 없이):
               </div>
             ))}
 
+            {/* ── 오늘 시황 자동 분석 ── */}
+            <button onClick={autoFetchNews} disabled={newsLoading}
+              style={{...S.btnPrimary, width:"100%", marginBottom:14, display:"flex", alignItems:"center", justifyContent:"center", gap:8}}>
+              <span>🔍</span>{newsLoading && newsSource!=="manual" ? "오늘 시황 검색 중..." : "오늘 시황 자동 분석"}
+            </button>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:14}}>
+              <div style={{flex:1,height:1,background:"#1c2638"}}/>
+              <span style={{fontSize:9,color:"#4a5a72",letterSpacing:1}}>또는 직접 뉴스 입력</span>
+              <div style={{flex:1,height:1,background:"#1c2638"}}/>
+            </div>
+
             <div style={S.hscroll}>
               {[
                 { l:"🏦 금통위", t:"한국은행 금통위 기준금리 동결. 원/달러 환율 1,380원대. 외국인 순매수 전환." },
@@ -1008,12 +1047,13 @@ JSON만 반환 (마크다운 없이):
                 style={{width:"100%",minHeight:110,background:"transparent",border:"none",padding:"10px 16px",color:"#dce8f5",fontFamily:"inherit",fontSize:13,lineHeight:1.7,resize:"vertical"}} />
               <div style={{padding:"8px 16px 12px",display:"flex",justifyContent:"space-between",alignItems:"center",borderTop:"1px solid #1c2638"}}>
                 <span style={{fontSize:11,color:"#4a5a72"}}>{newsText.length}자</span>
-                <button onClick={analyzeNews} disabled={!newsText.trim()||newsLoading}
+                <button onClick={()=>{ setNewsSource("manual"); analyzeNews(); }} disabled={!newsText.trim()||newsLoading}
                   style={{...S.btnPrimary, flex:"none", padding:"8px 20px", opacity:!newsText.trim()?0.4:1}}>
-                  {newsLoading?"분석 중...":"AI 분석 →"}
+                  {newsLoading && newsSource==="manual" ?"분석 중...":"AI 분석 →"}
                 </button>
               </div>
             </div>
+
 
             {newsLoading && (
               <div style={{...S.card, textAlign:"center", padding:40, display:"flex", flexDirection:"column", alignItems:"center", gap:16}}>
@@ -1025,9 +1065,12 @@ JSON만 반환 (마크다운 없이):
               <div className="fade">
                 <div style={S.card}>
                   <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12}}>
-                    <span style={badge(sentColor[newsResult.sentiment]||"#f5a623")}>
-                      {newsResult.sentiment==="bullish"?"▲ BULLISH":newsResult.sentiment==="bearish"?"▼ BEARISH":"◆ NEUTRAL"}
-                    </span>
+                    <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                      <span style={badge(sentColor[newsResult.sentiment]||"#f5a623")}>
+                        {newsResult.sentiment==="bullish"?"▲ BULLISH":newsResult.sentiment==="bearish"?"▼ BEARISH":"◆ NEUTRAL"}
+                      </span>
+                      {newsSource==="auto" && <span style={badge("#6366f1")}>🔍 웹 검색</span>}
+                    </div>
                     <span style={{fontSize:11,color:"#4a5a72"}}>{new Date().toLocaleDateString("ko-KR")}</span>
                   </div>
                   <div style={{fontSize:13,lineHeight:1.9,marginBottom:12}}>{newsResult.summary}</div>
