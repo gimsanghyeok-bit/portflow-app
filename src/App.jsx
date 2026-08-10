@@ -23,29 +23,42 @@ async function callClaude({ system, messages, max_tokens = 1000, tools }) {
   return resp.json();
 }
 
-// 웹 검색 도구를 쓰면 응답에 text 블록이 여러 개로 나뉘어 오므로 전부 이어붙임
+// 웹 검색 도구를 쓰면 응답이 여러 text 블록으로 쪼개져 올 수 있음.
+// 보통 마지막 블록이 최종 답변이라 그것부터 시도하고, 안 되면 전체를 이어붙여 재시도.
 function extractText(data) {
   const blocks = (data.content || []).filter(c => c.type === "text").map(c => c.text);
-  return blocks.join("\n") || "{}";
+  if (blocks.length === 0) return "{}";
+  return blocks[blocks.length - 1]; // 기본값: 마지막 블록 (최종 답변일 가능성이 가장 높음)
+}
+function extractAllText(data) {
+  const blocks = (data.content || []).filter(c => c.type === "text").map(c => c.text);
+  return blocks.join("");
 }
 
-// AI 응답에 설명 문구가 섞이거나 잘려도 최대한 파싱을 시도
-function safeParseJSON(raw) {
+// AI 응답에 설명 문구가 섞이거나 잘려도, 여러 후보를 순서대로 시도해 최대한 파싱
+function safeParseJSON(raw, data) {
+  const candidates = [raw];
+  if (data) candidates.push(extractAllText(data));
+  for (const cand of candidates) {
+    const parsed = tryParseOne(cand);
+    if (parsed) return parsed;
+  }
+  throw new Error("JSON 파싱 실패 (응답이 잘렸거나 형식이 어긋남)");
+}
+function tryParseOne(raw) {
   let s = raw.replace(/```json|```/g, "").trim();
   try { return JSON.parse(s); } catch (e) {}
-  // 앞뒤 잡텍스트 제거: 첫 { 부터 마지막 } 까지만 추출
   const start = s.indexOf("{");
   const end = s.lastIndexOf("}");
   if (start !== -1 && end !== -1 && end > start) {
     try { return JSON.parse(s.slice(start, end + 1)); } catch (e) {}
   }
-  // 배열 형태 대비: 첫 [ 부터 마지막 ] 까지
   const as = s.indexOf("[");
   const ae = s.lastIndexOf("]");
   if (as !== -1 && ae !== -1 && ae > as) {
     try { return JSON.parse(s.slice(as, ae + 1)); } catch (e) {}
   }
-  throw new Error("JSON 파싱 실패 (응답이 잘렸거나 형식이 어긋남)");
+  return null;
 }
 
 const SECTOR_COLORS = ["#00e5b8","#6366f1","#f5a623","#ff4d6a","#22d47a","#5b8dee","#e879f9","#84cc16"];
@@ -279,7 +292,7 @@ JSON만 반환 (마크다운 없이):
 {"summary":"3문장 요약","macro":"거시경제 영향","sentiment":"bullish|neutral|bearish","leaders":[{"theme":"","reason":""}],"sectorImpact":[{"sector":"","impact":"positive|negative|neutral","reason":""}],"bluechipRecs":[{"ticker":"","name":"","reason":"","category":"대형주|우량주|배당성장주","marketCap":""}],"risks":["",""],"portfolioAction":""}`;
       const data = await callClaude({ system: systemPrompt, max_tokens: 1800,
         messages: [{ role:"user", content: newsText }] });
-      setNewsResult(safeParseJSON(extractText(data)));
+      setNewsResult(safeParseJSON(extractText(data), data));
     } catch (e) { setNewsResult(null); }
     setNewsLoading(false);
   };
@@ -292,14 +305,14 @@ JSON만 반환 (마크다운 없이):
       const systemPrompt = `당신은 한국 주식시장(코스피/코스닥) 전문 포트폴리오 매니저 AI입니다. 웹 검색 도구로 오늘(${today}) 한국 증시 관련 최신 뉴스를 직접 찾아서 분석하세요.
 ★ 검색 지침: 코스피/코스닥 마감·수급 동향, 한국은행/금통위, 환율, 반도체·2차전지·바이오 등 주요 섹터 뉴스를 검색할 것.
 ★ 절대 규칙: ① 추천은 코스피200 구성 또는 시총 상위 우량주만 ② 소형주·테마주·작전주·급등주 배제 ③ 투기적 표현 금지 ④ 종목명은 한국거래소 정식 명칭 ⑤ 단정적 예측 금지, 근거 중심 서술 ⑥ 검색으로 찾은 실제 뉴스에 기반해서만 작성 (추측 금지)
-검색과 분석이 끝나면, 다른 설명 없이 아래 JSON 형식만 마지막에 반환하세요 (마크다운 없이):
+검색과 분석이 끝나면, 검색 과정이나 찾은 내용에 대한 설명 문장을 절대 먼저 쓰지 말고, 최종 응답의 맨 처음부터 바로 아래 JSON 객체 하나만 반환하세요. JSON 앞뒤에 어떠한 텍스트/설명/마크다운도 붙이지 마세요:
 {"summary":"오늘 시황 3문장 요약","macro":"거시경제 영향","sentiment":"bullish|neutral|bearish","leaders":[{"theme":"","reason":""}],"sectorImpact":[{"sector":"","impact":"positive|negative|neutral","reason":""}],"bluechipRecs":[{"ticker":"","name":"","reason":"","category":"대형주|우량주|배당성장주","marketCap":""}],"risks":["",""],"portfolioAction":""}`;
       const data = await callClaude({
         system: systemPrompt, max_tokens: 2200,
         tools: [{ type: "web_search_20250305", name: "web_search" }],
         messages: [{ role:"user", content: "오늘 한국 증시 시황을 검색해서 위 형식에 맞게 분석해주세요." }],
       });
-      setNewsResult(safeParseJSON(extractText(data)));
+      setNewsResult(safeParseJSON(extractText(data), data));
       setNewsSource("auto");
       setNewsText("");
     } catch (e) { setNewsResult(null); }
