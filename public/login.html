@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>PortFlow·AI 로그인</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    min-height: 100svh; background: #080b10; color: #dce8f5;
+    font-family: system-ui, -apple-system, sans-serif;
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  .card {
+    width: 100%; max-width: 340px; background: #121820; border: 1px solid #1c2638;
+    border-radius: 16px; padding: 28px 24px;
+  }
+  .logo { font-size: 20px; font-weight: 800; letter-spacing: 0.5px; margin-bottom: 24px; text-align: center; }
+  .logo span { color: #00e5b8; }
+  label { display: block; font-size: 12px; color: #8a9bb5; margin-bottom: 6px; }
+  input {
+    width: 100%; background: #0d1117; border: 1px solid #1c2638; border-radius: 8px;
+    padding: 12px 14px; color: #dce8f5; font-size: 14px; margin-bottom: 16px;
+  }
+  input:focus { outline: none; border-color: #00e5b8; }
+  button {
+    width: 100%; background: #00e5b8; color: #080b10; border: none; border-radius: 99px;
+    padding: 13px; font-size: 14px; font-weight: 700; cursor: pointer;
+  }
+  .error {
+    background: #ff4d6a18; border: 1px solid #ff4d6a40; color: #ff4d6a;
+    border-radius: 8px; padding: 10px 12px; font-size: 12px; margin-bottom: 16px; display: none;
+  }
+  .error.show { display: block; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">PORTFLOW<span>·AI</span></div>
+    <div class="error" id="err">아이디 또는 비밀번호가 올바르지 않습니다.</div>
+    <form method="POST" action="/api/login">
+      <label for="user">아이디</label>
+      <input type="text" id="user" name="user" autocomplete="username" required />
+      <label for="password">비밀번호</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required />
+      <button type="submit">로그인</button>
+    </form>
+  </div>
+  <script>
+    if (new URLSearchParams(location.search).get("error") === "1") {
+      document.getElementById("err").classList.add("show");
+    }
+  </script>
+</body>
+</html>
