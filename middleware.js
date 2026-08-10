@@ -1,25 +1,24 @@
-// Vercel Routing Middleware — 사이트 전체(정적 페이지 + /api 포함)에 비밀번호를 겁니다.
-// 완전 무료(Hobby 요금제)로 동작합니다.
+// Vercel Routing Middleware — 사이트 전체(정적 페이지 + /api 포함)에 로그인 보호를 겁니다.
+// 브라우저 팝업(Basic Auth) 대신 직접 만든 로그인 페이지(/login.html)를 씁니다.
+// 카카오톡 인앱 브라우저 등에서도 안정적으로 동작합니다.
 // Vercel 프로젝트 설정 > Environment Variables 에 SITE_USER, SITE_PASSWORD 를 등록하세요.
 
 export default function middleware(request) {
-  const auth = request.headers.get("authorization");
+  const url = new URL(request.url);
 
-  if (auth) {
-    const [scheme, encoded] = auth.split(" ");
-    if (scheme === "Basic" && encoded) {
-      const decoded = atob(encoded);
-      const idx = decoded.indexOf(":");
-      const user = decoded.slice(0, idx);
-      const pass = decoded.slice(idx + 1);
-      if (user === process.env.SITE_USER && pass === process.env.SITE_PASSWORD) {
-        return; // 통과
-      }
-    }
+  // 로그인 페이지와 로그인 처리 API는 항상 통과
+  if (url.pathname === "/login.html" || url.pathname === "/api/login") {
+    return;
   }
 
-  return new Response("Authentication required", {
-    status: 401,
-    headers: { "WWW-Authenticate": 'Basic realm="PortFlow AI"' },
-  });
+  const cookieHeader = request.headers.get("cookie") || "";
+  const match = cookieHeader.match(/site_auth=([^;]+)/);
+  const value = match ? decodeURIComponent(match[1]) : null;
+  const expected = `${process.env.SITE_USER}:${process.env.SITE_PASSWORD}`;
+
+  if (value === expected) {
+    return; // 통과
+  }
+
+  return Response.redirect(new URL("/login.html", request.url), 302);
 }
