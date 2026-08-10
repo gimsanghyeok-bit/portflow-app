@@ -300,19 +300,22 @@ JSON만 반환 (마크다운 없이):
     try {
       const today = new Date().toLocaleDateString("ko-KR", { year:"numeric", month:"long", day:"numeric" });
       const systemPrompt = `당신은 한국 주식시장(코스피/코스닥) 전문 포트폴리오 매니저 AI입니다. 웹 검색 도구로 오늘(${today}) 한국 증시 관련 최신 뉴스를 직접 찾아서 분석하세요.
-★ 검색 지침: 코스피/코스닥 마감·수급 동향, 한국은행/금통위, 환율, 반도체·2차전지·바이오 등 주요 섹터 뉴스를 검색할 것.
-★ 절대 규칙: ① 추천은 코스피200 구성 또는 시총 상위 우량주만 ② 소형주·테마주·작전주·급등주 배제 ③ 투기적 표현 금지 ④ 종목명은 한국거래소 정식 명칭 ⑤ 단정적 예측 금지, 근거 중심 서술 ⑥ 검색으로 찾은 실제 뉴스에 기반해서만 작성 (추측 금지)
+★ 검색 지침: 검색은 2~3회 이내로 효율적으로 (코스피 마감 동향 1회, 주요 섹터/한국은행 이슈 1~2회). 검색 결과를 다 읽고 정리할 시간을 남겨두세요.
+★ 절대 규칙: ① 추천은 코스피200 구성 또는 시총 상위 우량주만 ② 소형주·테마주·작전주·급등주 배제 ③ 투기적 표현 금지 ④ 종목명은 한국거래소 정식 명칭 ⑤ 단정적 예측 금지, 근거 중심 서술 ⑥ 검색으로 찾은 실제 뉴스에 기반해서만 작성 (추측 금지) ⑦★★ 절대로 빈 문자열("")이나 빈 배열([])로 응답하지 마세요. 모든 필드를 검색으로 찾은 실제 내용으로 채우세요. 못 채우겠으면 그 필드는 최선을 다해 일반적인 시황이라도 채워 넣으세요.
 검색과 분석이 끝나면, 검색 과정이나 찾은 내용에 대한 설명 문장을 절대 먼저 쓰지 말고, 최종 응답의 맨 처음부터 바로 아래 JSON 객체 하나만 반환하세요. JSON 앞뒤에 어떠한 텍스트/설명/마크다운도 붙이지 마세요:
-{"summary":"오늘 시황 3문장 요약","macro":"거시경제 영향","sentiment":"bullish|neutral|bearish","leaders":[{"theme":"","reason":""}],"sectorImpact":[{"sector":"","impact":"positive|negative|neutral","reason":""}],"bluechipRecs":[{"ticker":"","name":"","reason":"","category":"대형주|우량주|배당성장주","marketCap":""}],"risks":["",""],"portfolioAction":""}`;
+{"summary":"오늘 시황 3문장 요약(반드시 채울 것)","macro":"거시경제 영향 (반드시 채울 것)","sentiment":"bullish|neutral|bearish","leaders":[{"theme":"주도 테마명","reason":"이유"}],"sectorImpact":[{"sector":"섹터명","impact":"positive|negative|neutral","reason":"이유"}],"bluechipRecs":[{"ticker":"","name":"","reason":"","category":"대형주|우량주|배당성장주","marketCap":""}],"risks":["리스크1","리스크2"],"portfolioAction":"대응 전략 (반드시 채울 것)"}`;
       const data = await callClaude({
-        system: systemPrompt, max_tokens: 2200,
+        system: systemPrompt, max_tokens: 4000,
         tools: [{ type: "web_search_20250305", name: "web_search" }],
-        messages: [{ role:"user", content: "오늘 한국 증시 시황을 검색해서 위 형식에 맞게 분석해주세요." }],
+        messages: [{ role:"user", content: "오늘 한국 증시 시황을 검색해서 위 형식에 맞게, 모든 필드를 실제 내용으로 채워서 분석해주세요." }],
       });
-      setNewsResult(parseAIJson(data));
+      const parsed = parseAIJson(data);
+      const isEmpty = !parsed.summary?.trim() && !parsed.macro?.trim() && (!parsed.sectorImpact || parsed.sectorImpact.length === 0);
+      if (isEmpty) throw new Error("검색은 됐지만 응답 내용이 비어 있습니다. 다시 시도해주세요.");
+      setNewsResult(parsed);
       setNewsSource("auto");
       setNewsText("");
-    } catch (e) { setNewsResult(null); }
+    } catch (e) { setNewsResult(null); alert(e.message || "자동 분석에 실패했습니다. 다시 시도해주세요."); }
     setNewsLoading(false);
   };
 
