@@ -24,26 +24,23 @@ async function callClaude({ system, messages, max_tokens = 1000, tools }) {
 }
 
 // 웹 검색 도구를 쓰면 응답이 여러 text 블록으로 쪼개져 올 수 있음.
-// 보통 마지막 블록이 최종 답변이라 그것부터 시도하고, 안 되면 전체를 이어붙여 재시도.
-function extractText(data) {
+// 여러 조합(전체 이어붙임 / 마지막 블록 / 첫 블록)을 다 시도해서,
+// 그중 "가장 내용이 많이 채워진" 결과를 채택 (일부 조각만 파싱되는 사고 방지)
+function parseAIJson(data) {
   const blocks = (data.content || []).filter(c => c.type === "text").map(c => c.text);
-  if (blocks.length === 0) return "{}";
-  return blocks[blocks.length - 1]; // 기본값: 마지막 블록 (최종 답변일 가능성이 가장 높음)
-}
-function extractAllText(data) {
-  const blocks = (data.content || []).filter(c => c.type === "text").map(c => c.text);
-  return blocks.join("");
-}
+  if (blocks.length === 0) throw new Error("응답에 텍스트가 없습니다");
+  const candidates = [blocks.join("")];
+  if (blocks.length > 1) { candidates.push(blocks[blocks.length - 1], blocks[0]); }
 
-// AI 응답에 설명 문구가 섞이거나 잘려도, 여러 후보를 순서대로 시도해 최대한 파싱
-function safeParseJSON(raw, data) {
-  const candidates = [raw];
-  if (data) candidates.push(extractAllText(data));
+  let best = null, bestScore = -1;
   for (const cand of candidates) {
     const parsed = tryParseOne(cand);
-    if (parsed) return parsed;
+    if (!parsed) continue;
+    const score = JSON.stringify(parsed).length; // 더 길게(=더 많이) 파싱된 쪽을 채택
+    if (score > bestScore) { best = parsed; bestScore = score; }
   }
-  throw new Error("JSON 파싱 실패 (응답이 잘렸거나 형식이 어긋남)");
+  if (!best) throw new Error("JSON 파싱 실패 (응답이 잘렸거나 형식이 어긋남)");
+  return best;
 }
 function tryParseOne(raw) {
   let s = raw.replace(/```json|```/g, "").trim();
@@ -60,6 +57,7 @@ function tryParseOne(raw) {
   }
   return null;
 }
+
 
 const SECTOR_COLORS = ["#00e5b8","#6366f1","#f5a623","#ff4d6a","#22d47a","#5b8dee","#e879f9","#84cc16"];
 
@@ -269,8 +267,7 @@ export default function App() {
           { type:"text", text:"이 잔고 화면의 모든 종목을 매입평균가 포함해 JSON 배열로 추출하세요." }
         ]}]
       });
-      const raw = data.content?.find(c => c.type === "text")?.text ?? "[]";
-      const arr = safeParseJSON(raw);
+      const arr = parseAIJson(data);
       setParsed(arr.map(h => {
         const calc = (h.quantity||0) * (h.price||0);
         const ok = h.evalAmt > 0 ? Math.abs(calc - h.evalAmt) / h.evalAmt < 0.15 : false;
@@ -292,7 +289,7 @@ JSON만 반환 (마크다운 없이):
 {"summary":"3문장 요약","macro":"거시경제 영향","sentiment":"bullish|neutral|bearish","leaders":[{"theme":"","reason":""}],"sectorImpact":[{"sector":"","impact":"positive|negative|neutral","reason":""}],"bluechipRecs":[{"ticker":"","name":"","reason":"","category":"대형주|우량주|배당성장주","marketCap":""}],"risks":["",""],"portfolioAction":""}`;
       const data = await callClaude({ system: systemPrompt, max_tokens: 1800,
         messages: [{ role:"user", content: newsText }] });
-      setNewsResult(safeParseJSON(extractText(data), data));
+      setNewsResult(parseAIJson(data));
     } catch (e) { setNewsResult(null); }
     setNewsLoading(false);
   };
@@ -312,7 +309,7 @@ JSON만 반환 (마크다운 없이):
         tools: [{ type: "web_search_20250305", name: "web_search" }],
         messages: [{ role:"user", content: "오늘 한국 증시 시황을 검색해서 위 형식에 맞게 분석해주세요." }],
       });
-      setNewsResult(safeParseJSON(extractText(data), data));
+      setNewsResult(parseAIJson(data));
       setNewsSource("auto");
       setNewsText("");
     } catch (e) { setNewsResult(null); }
@@ -349,8 +346,7 @@ JSON만 반환 (마크다운 없이):
 {"diagnosis":"현재 포트폴리오 3문장 진단","sells":[{"name":"","ticker":"","quantity":0,"limitPrice":0,"profitPct":0,"reason":""}],"holds":[{"name":"","reason":""}],"buys":[{"name":"","ticker":"","sector":"","quantity":0,"limitPrice":0,"amountKRW":0,"reason":""}],"cashLeft":0,"caution":"주의사항"}`;
       const data = await callClaude({ system: systemPrompt, max_tokens: 2200,
         messages: [{ role:"user", content: `내 포트폴리오입니다. 목표비중에 맞게 갈아타기를 제안해주세요.\n${JSON.stringify(ctx, null, 1)}` }] });
-      const raw = data.content?.find(c => c.type === "text")?.text ?? "{}";
-      setSwitchResult(safeParseJSON(raw));
+      setSwitchResult(parseAIJson(data));
     } catch (e) { setSwitchResult({ error: true, msg: e.message }); }
     setSwitchLoading(false);
   };
@@ -375,8 +371,7 @@ JSON만 반환 (마크다운 없이):
         : `현재 보유 섹터(${sectorNames || "없음"})와 겹치지 않는, 우량주 위주 신규 투자 후보 5~6개를 다양한 스타일(성장/배당/저평가 등 섞어서)로 추천해주세요.`;
       const data = await callClaude({ system: systemPrompt, max_tokens: 2200,
         messages: [{ role:"user", content: userMsg }] });
-      const raw = data.content?.find(c => c.type === "text")?.text ?? "{}";
-      setDiscResult(safeParseJSON(raw));
+      setDiscResult(parseAIJson(data));
     } catch (e) { setDiscResult({ error: true, msg: e.message }); }
     setDiscLoading(false);
   };
