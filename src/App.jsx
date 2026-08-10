@@ -23,6 +23,25 @@ async function callClaude({ system, messages, max_tokens = 1000 }) {
   return resp.json();
 }
 
+// AI 응답에 설명 문구가 섞이거나 잘려도 최대한 파싱을 시도
+function safeParseJSON(raw) {
+  let s = raw.replace(/```json|```/g, "").trim();
+  try { return JSON.parse(s); } catch (e) {}
+  // 앞뒤 잡텍스트 제거: 첫 { 부터 마지막 } 까지만 추출
+  const start = s.indexOf("{");
+  const end = s.lastIndexOf("}");
+  if (start !== -1 && end !== -1 && end > start) {
+    try { return JSON.parse(s.slice(start, end + 1)); } catch (e) {}
+  }
+  // 배열 형태 대비: 첫 [ 부터 마지막 ] 까지
+  const as = s.indexOf("[");
+  const ae = s.lastIndexOf("]");
+  if (as !== -1 && ae !== -1 && ae > as) {
+    try { return JSON.parse(s.slice(as, ae + 1)); } catch (e) {}
+  }
+  throw new Error("JSON 파싱 실패 (응답이 잘렸거나 형식이 어긋남)");
+}
+
 const SECTOR_COLORS = ["#00e5b8","#6366f1","#f5a623","#ff4d6a","#22d47a","#5b8dee","#e879f9","#84cc16"];
 
 const DEFAULT_TARGETS = [
@@ -224,14 +243,14 @@ export default function App() {
 섹터 분류: 삼성전자,SK하이닉스,한미반도체,DB하이텍,리노공업→"반도체" / LG에너지솔루션,삼성SDI,에코프로비엠,포스코퓨처엠,엘앤에프→"2차전지" / 셀트리온,삼성바이오로직스,유한양행,알테오젠→"바이오" / KB금융,신한지주,하나금융지주,삼성생명,메리츠금융지주→"금융" / NAVER,카카오,크래프톤,엔씨소프트→"IT/플랫폼" / 나머지→"기타"
 숫자에서 ₩ , 원 % 제거. JSON 배열만.`;
       const data = await callClaude({
-        system: systemPrompt, max_tokens: 1500,
+        system: systemPrompt, max_tokens: 1800,
         messages: [{ role:"user", content: [
           { type:"image", source:{ type:"base64", media_type:file.type||"image/jpeg", data:b64 } },
           { type:"text", text:"이 잔고 화면의 모든 종목을 매입평균가 포함해 JSON 배열로 추출하세요." }
         ]}]
       });
       const raw = data.content?.find(c => c.type === "text")?.text ?? "[]";
-      const arr = JSON.parse(raw.replace(/```json|```/g, "").trim());
+      const arr = safeParseJSON(raw);
       setParsed(arr.map(h => {
         const calc = (h.quantity||0) * (h.price||0);
         const ok = h.evalAmt > 0 ? Math.abs(calc - h.evalAmt) / h.evalAmt < 0.15 : false;
@@ -251,10 +270,10 @@ export default function App() {
 ★ 절대 규칙: ① 추천은 코스피200 구성 또는 시총 상위 우량주만 ② 소형주·테마주·작전주·급등주 배제 ③ 투기적 표현 금지 ④ 종목명은 한국거래소 정식 명칭 ⑤ 단정적 예측 금지, 근거 중심 서술
 JSON만 반환 (마크다운 없이):
 {"summary":"3문장 요약","macro":"거시경제 영향","sentiment":"bullish|neutral|bearish","leaders":[{"theme":"","reason":""}],"sectorImpact":[{"sector":"","impact":"positive|negative|neutral","reason":""}],"bluechipRecs":[{"ticker":"","name":"","reason":"","category":"대형주|우량주|배당성장주","marketCap":""}],"risks":["",""],"portfolioAction":""}`;
-      const data = await callClaude({ system: systemPrompt, max_tokens: 1500,
+      const data = await callClaude({ system: systemPrompt, max_tokens: 1800,
         messages: [{ role:"user", content: newsText }] });
       const raw = data.content?.find(c => c.type === "text")?.text ?? "{}";
-      setNewsResult(JSON.parse(raw.replace(/```json|```/g, "").trim()));
+      setNewsResult(safeParseJSON(raw));
     } catch (e) { setNewsResult(null); }
     setNewsLoading(false);
   };
@@ -287,11 +306,11 @@ JSON만 반환 (마크다운 없이):
 ⑤ 단정적 수익 보장 표현 금지.
 JSON만 반환 (마크다운 없이):
 {"diagnosis":"현재 포트폴리오 3문장 진단","sells":[{"name":"","ticker":"","quantity":0,"limitPrice":0,"profitPct":0,"reason":""}],"holds":[{"name":"","reason":""}],"buys":[{"name":"","ticker":"","sector":"","quantity":0,"limitPrice":0,"amountKRW":0,"reason":""}],"cashLeft":0,"caution":"주의사항"}`;
-      const data = await callClaude({ system: systemPrompt, max_tokens: 2000,
+      const data = await callClaude({ system: systemPrompt, max_tokens: 2200,
         messages: [{ role:"user", content: `내 포트폴리오입니다. 목표비중에 맞게 갈아타기를 제안해주세요.\n${JSON.stringify(ctx, null, 1)}` }] });
       const raw = data.content?.find(c => c.type === "text")?.text ?? "{}";
-      setSwitchResult(JSON.parse(raw.replace(/```json|```/g, "").trim()));
-    } catch (e) { setSwitchResult({ error: true }); }
+      setSwitchResult(safeParseJSON(raw));
+    } catch (e) { setSwitchResult({ error: true, msg: e.message }); }
     setSwitchLoading(false);
   };
 
@@ -303,21 +322,21 @@ JSON만 반환 (마크다운 없이):
       const isDomestic = discMarket === "domestic";
       const systemPrompt = isDomestic
         ? `당신은 한국 주식시장(코스피/코스닥) 종목 발굴 전문 AI입니다.
-★ 절대 규칙: ① 코스피200 구성 또는 시총 상위 우량주 중심 (신규 상장·소형주·테마주·작전주 배제) ② 종목명은 한국거래소 정식 명칭, 종목코드 포함 ③ 투기적/단정적 표현 금지, 근거 중심 ④ 사용자가 스타일을 지정하면 그 기준에 맞춰 고를 것 (예: 배당주면 배당수익률·배당성향 근거 제시)
+★ 절대 규칙: ① 코스피200 구성 또는 시총 상위 우량주 중심 (신규 상장·소형주·테마주·작전주 배제) ② 종목명은 한국거래소 정식 명칭, 종목코드 포함 ③ 투기적/단정적 표현 금지, 근거 중심 ④ 사용자가 스타일을 지정하면 그 기준에 맞춰 고를 것 (예: 배당주면 배당수익률·배당성향 근거 제시) ⑤ reason은 2문장 이내로 간결하게
 JSON만 반환 (마크다운 없이):
 {"picks":[{"ticker":"","name":"","sector":"","style":"","reason":"","marketCap":"","note":""}],"caution":"주의사항"}`
         : `당신은 미국/글로벌 주식시장 종목 발굴 전문 AI입니다.
-★ 절대 규칙: ① S&P500 또는 나스닥100 등 대형 우량주 중심 (소형주·밈주식·최근 상장주 배제) ② 티커와 정식 회사명 포함 ③ 투기적/단정적 표현 금지, 근거 중심 ④ 사용자가 스타일을 지정하면 그 기준에 맞춰 고를 것
+★ 절대 규칙: ① S&P500 또는 나스닥100 등 대형 우량주 중심 (소형주·밈주식·최근 상장주 배제) ② 티커와 정식 회사명 포함 ③ 투기적/단정적 표현 금지, 근거 중심 ④ 사용자가 스타일을 지정하면 그 기준에 맞춰 고를 것 ⑤ reason은 2문장 이내로 간결하게
 JSON만 반환 (마크다운 없이):
 {"picks":[{"ticker":"","name":"","sector":"","style":"","reason":"","marketCap":"","note":""}],"caution":"주의사항"}`;
       const userMsg = discStyle.trim()
         ? `다음 조건에 맞는 신규 투자 후보 5~6개를 추천해주세요: ${discStyle}\n(현재 보유 섹터: ${sectorNames || "없음"} — 겹치지 않는 새로운 아이디어도 환영)`
         : `현재 보유 섹터(${sectorNames || "없음"})와 겹치지 않는, 우량주 위주 신규 투자 후보 5~6개를 다양한 스타일(성장/배당/저평가 등 섞어서)로 추천해주세요.`;
-      const data = await callClaude({ system: systemPrompt, max_tokens: 1500,
+      const data = await callClaude({ system: systemPrompt, max_tokens: 2200,
         messages: [{ role:"user", content: userMsg }] });
       const raw = data.content?.find(c => c.type === "text")?.text ?? "{}";
-      setDiscResult(JSON.parse(raw.replace(/```json|```/g, "").trim()));
-    } catch (e) { setDiscResult({ error: true }); }
+      setDiscResult(safeParseJSON(raw));
+    } catch (e) { setDiscResult({ error: true, msg: e.message }); }
     setDiscLoading(false);
   };
 
@@ -798,6 +817,7 @@ JSON만 반환 (마크다운 없이):
             {switchResult && !switchLoading && (switchResult.error ? (
               <div style={{...S.card, marginTop:12, borderColor:"#ff4d6a40"}}>
                 <div style={{fontSize:12,color:"#ff4d6a"}}>분석에 실패했습니다. 잠시 후 다시 시도해주세요.</div>
+                {switchResult.msg && <div style={{fontSize:10,color:"#4a5a72",marginTop:6}}>({switchResult.msg})</div>}
               </div>
             ) : (
               <div className="fade" style={{marginTop:12}}>
@@ -935,6 +955,7 @@ JSON만 반환 (마크다운 없이):
             {discResult && !discLoading && (discResult.error ? (
               <div style={{...S.card, borderColor:"#ff4d6a40"}}>
                 <div style={{fontSize:12,color:"#ff4d6a"}}>발굴에 실패했습니다. 잠시 후 다시 시도해주세요.</div>
+                {discResult.msg && <div style={{fontSize:10,color:"#4a5a72",marginTop:6}}>({discResult.msg})</div>}
               </div>
             ) : (
               <div className="fade">
