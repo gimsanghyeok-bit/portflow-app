@@ -14,7 +14,9 @@ export default function middleware(request) {
   const cookieHeader = request.headers.get("cookie") || "";
   const match = cookieHeader.match(/site_auth=([^;]+)/);
   const value = match ? decodeURIComponent(match[1]) : null;
-  const expected = `${process.env.SITE_USER}:${process.env.SITE_PASSWORD}`;
+  const envUser = (process.env.SITE_USER || "").trim();
+  const envPass = (process.env.SITE_PASSWORD || "").trim();
+  const expected = `${envUser}:${envPass}`;
 
   if (value === expected) {
     return; // 통과
