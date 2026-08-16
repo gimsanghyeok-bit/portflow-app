@@ -78,6 +78,15 @@ const fmtKRW = (n) => {
   return a >= 1e8 ? `${(n/1e8).toFixed(2)}억` : a >= 1e4 ? `${Math.round(n/1e4).toLocaleString()}만` : Math.round(n).toLocaleString();
 };
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
+const timeAgo = (iso) => {
+  if (!iso) return null;
+  const diffMin = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (diffMin < 1) return "방금 전";
+  if (diffMin < 60) return `${diffMin}분 전`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}시간 전`;
+  return `${Math.round(diffHr / 24)}일 전`;
+};
 
 // ── 핵심 계산: 수익률 게이팅 리밸런싱 ─────────────────
 function calcRebalancing(holdings, targets, fx, opts) {
@@ -174,6 +183,7 @@ export default function App() {
   // 갈아타기 제안
   const [switchLoading, setSwitchLoading] = useState(false);
   const [switchResult, setSwitchResult] = useState(null);
+  const [lastSwitchAt, setLastSwitchAt] = useState(null);
 
   // 신규 종목 발굴
   const [discMarket, setDiscMarket] = useState("domestic"); // domestic | overseas
@@ -194,6 +204,7 @@ export default function App() {
         if (s.minProfitPct != null) setMinProfitPct(s.minProfitPct);
         if (s.sellOffset != null) setSellOffset(s.sellOffset);
         if (s.buyOffset != null) setBuyOffset(s.buyOffset);
+        if (s.lastSwitchAt) setLastSwitchAt(s.lastSwitchAt);
         if (s.savedAt) setLastSaved(new Date(s.savedAt));
       } catch (e) { /* 첫 실행 */ }
       setStorageReady(true);
@@ -208,13 +219,13 @@ export default function App() {
       try {
         const savedAt = new Date().toISOString();
         await storage.set(STORAGE_KEY, JSON.stringify({
-          holdings, targets, fx, driftTol, profitOnly, minProfitPct, sellOffset, buyOffset, savedAt }));
+          holdings, targets, fx, driftTol, profitOnly, minProfitPct, sellOffset, buyOffset, lastSwitchAt, savedAt }));
         setSaveStatus("saved"); setLastSaved(new Date(savedAt));
         setTimeout(() => setSaveStatus("idle"), 2000);
       } catch (e) { setSaveStatus("error"); }
     }, 1000);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [holdings, targets, fx, driftTol, profitOnly, minProfitPct, sellOffset, buyOffset, storageReady]);
+  }, [holdings, targets, fx, driftTol, profitOnly, minProfitPct, sellOffset, buyOffset, lastSwitchAt, storageReady]);
 
   const resetAll = async () => {
     if (!confirm("저장된 모든 데이터를 삭제할까요?")) return;
@@ -324,7 +335,9 @@ JSON만 반환 (마크다운 없이):
     if (holdings.length === 0) { alert("먼저 보유 종목을 등록해주세요."); return; }
     setSwitchLoading(true); setSwitchResult(null);
     try {
+      const today = new Date().toLocaleDateString("ko-KR", { year:"numeric", month:"long", day:"numeric" });
       const ctx = {
+        오늘날짜: today,
         총자산_원: Math.round(totalKRW),
         총수익률_퍼센트: +totalPnLPct.toFixed(1),
         목표비중: targets.map(t=>({섹터:t.name, 목표:t.targetPct})),
@@ -336,20 +349,29 @@ JSON만 반환 (마크다운 없이):
                    현재가:Math.round(p), 매수단가:Math.round(a),
                    수익률: a>0 ? +(((p-a)/a)*100).toFixed(1) : null };
         }),
-        매도규칙: profitOnly ? `수익률 ${minProfitPct}% 이상인 종목만 매도` : "수익률 무관 매도 허용",
+        현재_매도규칙: profitOnly ? `수익률 ${minProfitPct}% 이상인 종목만 매도` : "수익률 무관 매도 허용",
       };
-      const systemPrompt = `당신은 한국 주식 포트폴리오 리밸런싱 전문 AI입니다. 사용자의 실제 포트폴리오를 받아 갈아타기를 제안합니다.
+      const systemPrompt = `당신은 한국 주식 포트폴리오 리밸런싱 전문 AI입니다. 웹 검색으로 오늘(${today})의 실제 시황(코스피/코스닥 동향, 주도 섹터/주도주, 국제 정세·환율 등 국내 증시에 영향 주는 요인)을 먼저 파악한 뒤, 사용자의 실제 포트폴리오와 결합해 리밸런싱을 제안합니다.
+★ 검색 지침: 검색은 2~3회 이내로 효율적으로 (오늘 증시 동향 1회, 보유 섹터 관련 이슈 1~2회).
 ★ 절대 규칙:
-① 사용자의 "매도규칙"을 반드시 지킬 것. 수익률이 기준 미달인 종목은 절대 매도 대상에 넣지 말고 hold 사유를 쓸 것.
-② 추천 매수 종목은 코스피200 구성 또는 시총 상위 우량주만. 소형주·테마주·작전주 배제.
-③ 매도/매수 희망가는 "현재가 대비 합리적 범위"로 제시하고, 예측이 아닌 참고 구간임을 reason에 명시.
-④ 매도 대금 총액 범위 안에서만 매수 수량을 제안할 것 (자금 초과 금지).
-⑤ 단정적 수익 보장 표현 금지.
-JSON만 반환 (마크다운 없이):
-{"diagnosis":"현재 포트폴리오 3문장 진단","sells":[{"name":"","ticker":"","quantity":0,"limitPrice":0,"profitPct":0,"reason":""}],"holds":[{"name":"","reason":""}],"buys":[{"name":"","ticker":"","sector":"","quantity":0,"limitPrice":0,"amountKRW":0,"reason":""}],"cashLeft":0,"caution":"주의사항"}`;
-      const data = await callClaude({ system: systemPrompt, max_tokens: 2200,
-        messages: [{ role:"user", content: `내 포트폴리오입니다. 목표비중에 맞게 갈아타기를 제안해주세요.\n${JSON.stringify(ctx, null, 1)}` }] });
-      setSwitchResult(parseAIJson(data));
+① "현재_매도규칙"을 기본 기준으로 삼되, 오늘 시황(주도주 여부, 섹터 모멘텀, 리스크 요인)에 따라 이 기준을 조정하는 게 낫다고 판단되면 suggestedRule에 근거와 함께 제안할 것. 사용자가 직접 적용 여부를 결정하므로, 판단 근거를 명확히 설명할 것.
+② 매도 대상은 원칙적으로 "현재_매도규칙"의 수익률 기준을 만족하는 종목 중에서 고르되, 시황상 특별히 매도를 권장/보류할 이유가 있으면 reason에 명시. 기준 미달 종목은 hold로.
+③ 추천 매수 종목은 코스피200 구성 또는 시총 상위 우량주만. 소형주·테마주·작전주 배제. 오늘 시황에서 확인된 주도 섹터/주도주를 우선 고려.
+④ 매도/매수 희망가는 "현재가 대비 합리적 범위"로 제시, 예측이 아닌 참고 구간임을 reason에 명시.
+⑤ 매도 대금 총액 범위 안에서만 매수 수량을 제안 (자금 초과 금지).
+⑥ 단정적 수익 보장 표현 금지. 검색으로 확인된 실제 내용에 근거해서만 작성.
+⑦★ 검색 과정 설명 없이, 최종 응답은 아래 JSON 객체 하나만 반환. 앞뒤에 텍스트/마크다운 금지. 빈 문자열이나 빈 배열로 응답하지 말 것 — 모든 필드를 실제 내용으로 채울 것:
+{"marketSummary":"오늘 시황 2~3문장 요약 (주도주/주도섹터 포함)","diagnosis":"내 포트폴리오 진단 2~3문장","suggestedRule":{"changed":true,"minProfitPct":0,"reason":"기준 조정 제안 근거 (조정 불필요하면 changed:false, reason에 이유)"},"sells":[{"name":"","ticker":"","quantity":0,"limitPrice":0,"profitPct":0,"reason":""}],"holds":[{"name":"","reason":""}],"buys":[{"name":"","ticker":"","sector":"","quantity":0,"limitPrice":0,"amountKRW":0,"reason":""}],"cashLeft":0,"caution":"주의사항"}`;
+      const data = await callClaude({
+        system: systemPrompt, max_tokens: 4500,
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        messages: [{ role:"user", content: `오늘 시황을 검색해서 반영한 뒤, 내 포트폴리오에 맞는 리밸런싱을 제안해주세요.\n${JSON.stringify(ctx, null, 1)}` }],
+      });
+      const parsed = parseAIJson(data);
+      const isEmpty = !parsed.diagnosis?.trim() && !parsed.marketSummary?.trim() && (!parsed.sells?.length && !parsed.buys?.length && !parsed.holds?.length);
+      if (isEmpty) throw new Error("검색은 됐지만 응답 내용이 비어 있습니다. 다시 시도해주세요.");
+      setSwitchResult(parsed);
+      setLastSwitchAt(new Date().toISOString());
     } catch (e) { setSwitchResult({ error: true, msg: e.message }); }
     setSwitchLoading(false);
   };
@@ -838,17 +860,22 @@ JSON만 반환 (마크다운 없이):
               })
             }
 
-            {/* 갈아타기 제안 */}
+            {/* 갈아타기 제안 (시황 검색 반영) */}
             <button onClick={suggestSwitch} disabled={switchLoading||holdings.length===0}
-              style={{...S.btnPrimary, width:"100%", marginTop:6, opacity: holdings.length===0?0.4:1}}>
-              {switchLoading?"AI 분석 중...":"🔄 AI 갈아타기 제안 받기"}
+              style={{...S.btnPrimary, width:"100%", marginTop:6, opacity: holdings.length===0?0.4:1, display:"flex", alignItems:"center", justifyContent:"center", gap:8}}>
+              <span>🔍</span>{switchLoading?"시황 검색+분석 중...":"오늘 시황 기반 리밸런싱 제안"}
             </button>
+            {lastSwitchAt && !switchLoading && (
+              <div style={{textAlign:"center",fontSize:10,color:"#9C8F78",marginTop:6}}>
+                마지막 분석: {timeAgo(lastSwitchAt)} · 크레딧 절약을 위해 하루 1~2회 권장
+              </div>
+            )}
 
             {switchLoading && (
               <div style={{...S.card, marginTop:12, textAlign:"center", padding:30, display:"flex", flexDirection:"column", alignItems:"center", gap:14}}>
                 <div className="spin"/>
                 <div style={{color:"#7A6F5E",fontSize:12,lineHeight:1.8}}>
-                  포트폴리오·수익률·목표비중을<br/>종합 분석 중입니다
+                  오늘 시황을 검색하고<br/>내 포트폴리오·수익률·목표비중과 종합 분석 중입니다
                 </div>
               </div>
             )}
@@ -860,6 +887,35 @@ JSON만 반환 (마크다운 없이):
               </div>
             ) : (
               <div className="fade" style={{marginTop:12}}>
+                {switchResult.marketSummary && (
+                  <div style={{...S.card, borderColor:"#5B7A9940", background:"#5B7A9908"}}>
+                    <div style={{...S.sectionLabel, color:"#5B7A99", display:"flex", alignItems:"center", gap:6}}>
+                      <span>🔍</span> 오늘 시황 요약
+                    </div>
+                    <div style={{fontSize:12,lineHeight:1.9}}>{switchResult.marketSummary}</div>
+                  </div>
+                )}
+
+                {switchResult.suggestedRule?.changed && (
+                  <div style={{...S.card, borderColor:"#C98A2C40", background:"#C98A2C08"}}>
+                    <div style={{...S.sectionLabel, color:"#C98A2C"}}>💡 매도 기준 조정 제안</div>
+                    <div style={{fontSize:12,lineHeight:1.8,marginBottom:10}}>{switchResult.suggestedRule.reason}</div>
+                    <div style={{display:"flex",alignItems:"center",gap:10}}>
+                      <div style={S.orderChip}>
+                        <span style={{color:"#9C8F78"}}>현재</span><b>{minProfitPct}%</b>
+                      </div>
+                      <span style={{color:"#9C8F78"}}>→</span>
+                      <div style={S.orderChip}>
+                        <span style={{color:"#9C8F78"}}>제안</span><b style={{color:"#C98A2C"}}>{switchResult.suggestedRule.minProfitPct}%</b>
+                      </div>
+                      <button onClick={()=>{ setMinProfitPct(switchResult.suggestedRule.minProfitPct); }}
+                        style={{marginLeft:"auto", background:"#C98A2C", color:"#FFFFFF", border:"none", borderRadius:99, padding:"7px 14px", fontFamily:"inherit", fontSize:11, fontWeight:700, cursor:"pointer"}}>
+                        적용하기
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div style={{...S.card, border:"1px solid #D9775740", background:"#D9775706"}}>
                   <div style={{...S.sectionLabel, color:"#D97757"}}>포트폴리오 진단</div>
                   <div style={{fontSize:12,lineHeight:1.9}}>{switchResult.diagnosis}</div>
