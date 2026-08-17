@@ -77,7 +77,15 @@ async function fetchQuotes(codes) {
     const data = await resp.json();
     const arr = data?.datas || [];
     const map = {};
-    clean.forEach((code, i) => { if (arr[i]?.closePrice) map[code] = arr[i]; });
+    clean.forEach((code, i) => {
+      const item = arr[i];
+      if (!item?.closePrice) return;
+      // closePrice가 "803,000"처럼 쉼표 포함 문자열로 올 수 있어서 숫자로 정규화
+      const price = typeof item.closePrice === "string"
+        ? parseFloat(item.closePrice.replace(/,/g, ""))
+        : item.closePrice;
+      if (!isNaN(price) && price > 0) map[code] = { ...item, closePrice: price };
+    });
     return map;
   } catch (e) { return {}; }
 }
@@ -416,13 +424,17 @@ JSON만 반환 (마크다운 없이):
         const q = quotes[x.ticker];
         if (!q) return { ...x, priceSource: "ai" };
         const real = q.closePrice;
-        return { ...x, realPrice: real, limitPrice: Math.round(real * (1 + sellOffset/100)), priceSource: "live" };
+        const limit = Math.round(real * (1 + sellOffset/100));
+        if (!real || isNaN(limit)) return { ...x, priceSource: "ai" };
+        return { ...x, realPrice: real, limitPrice: limit, priceSource: "live" };
       });
       parsed.buys = (parsed.buys||[]).map(x => {
         const q = quotes[x.ticker];
         if (!q) return { ...x, priceSource: "ai" };
         const real = q.closePrice;
-        return { ...x, realPrice: real, limitPrice: Math.round(real * (1 - buyOffset/100)), priceSource: "live" };
+        const limit = Math.round(real * (1 - buyOffset/100));
+        if (!real || isNaN(limit)) return { ...x, priceSource: "ai" };
+        return { ...x, realPrice: real, limitPrice: limit, priceSource: "live" };
       });
 
       setSwitchResult(parsed);
