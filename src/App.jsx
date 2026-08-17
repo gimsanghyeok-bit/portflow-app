@@ -65,6 +65,23 @@ function tryParseOne(raw) {
   return null;
 }
 
+// AI가 추정한 가격 대신, 네이버 금융 실시간 시세로 덮어쓰기 위한 조회 함수.
+// 종목코드(6자리) 배열을 받아 { "005930": {closePrice, ...}, ... } 형태로 반환.
+// 조회 실패해도 조용히 빈 객체 반환 (AI 추정치로 폴백됨)
+async function fetchQuotes(codes) {
+  const clean = [...new Set(codes.filter(c => /^\d{6}$/.test(c || "")))];
+  if (clean.length === 0) return {};
+  try {
+    const resp = await fetch(`/api/quote?codes=${clean.join(",")}`);
+    if (!resp.ok) return {};
+    const data = await resp.json();
+    const arr = data?.datas || [];
+    const map = {};
+    clean.forEach((code, i) => { if (arr[i]?.closePrice) map[code] = arr[i]; });
+    return map;
+  } catch (e) { return {}; }
+}
+
 
 const SECTOR_COLORS = ["#D97757","#5B7A99","#C98A2C","#BC4B3C","#5B8C5A","#6B8CAE","#A6748A","#8AA34A"];
 
@@ -391,6 +408,23 @@ JSON만 반환 (마크다운 없이):
       const parsed = parseAIJson(data);
       const isEmpty = !parsed.diagnosis?.trim() && !parsed.marketSummary?.trim() && (!parsed.sells?.length && !parsed.buys?.length && !parsed.holds?.length);
       if (isEmpty) throw new Error("검색은 됐지만 응답 내용이 비어 있습니다. 다시 시도해주세요.");
+
+      // AI가 검색으로 추정한 가격은 부정확할 수 있어서, 실시간 시세로 덮어씀
+      const tickers = [...(parsed.sells||[]), ...(parsed.buys||[])].map(x => x.ticker);
+      const quotes = await fetchQuotes(tickers);
+      parsed.sells = (parsed.sells||[]).map(x => {
+        const q = quotes[x.ticker];
+        if (!q) return { ...x, priceSource: "ai" };
+        const real = q.closePrice;
+        return { ...x, realPrice: real, limitPrice: Math.round(real * (1 + sellOffset/100)), priceSource: "live" };
+      });
+      parsed.buys = (parsed.buys||[]).map(x => {
+        const q = quotes[x.ticker];
+        if (!q) return { ...x, priceSource: "ai" };
+        const real = q.closePrice;
+        return { ...x, realPrice: real, limitPrice: Math.round(real * (1 - buyOffset/100)), priceSource: "live" };
+      });
+
       setSwitchResult(parsed);
       setLastSwitchAt(new Date().toISOString());
     } catch (e) { setSwitchResult({ error: true, msg: e.message }); }
@@ -417,7 +451,15 @@ JSON만 반환 (마크다운 없이):
         : `현재 보유 섹터(${sectorNames || "없음"})와 겹치지 않는, 우량주 위주 신규 투자 후보 5~6개를 다양한 스타일(성장/배당/저평가 등 섞어서)로 추천해주세요.`;
       const data = await callClaude({ system: systemPrompt, max_tokens: 2200,
         messages: [{ role:"user", content: userMsg }] });
-      setDiscResult(parseAIJson(data));
+      const parsed = parseAIJson(data);
+      if (isDomestic && parsed.picks?.length) {
+        const quotes = await fetchQuotes(parsed.picks.map(p => p.ticker));
+        parsed.picks = parsed.picks.map(p => {
+          const q = quotes[p.ticker];
+          return q ? { ...p, realPrice: q.closePrice, priceSource: "live" } : { ...p, priceSource: "ai" };
+        });
+      }
+      setDiscResult(parsed);
     } catch (e) { setDiscResult({ error: true, msg: e.message }); }
     setDiscLoading(false);
   };
@@ -975,9 +1017,17 @@ JSON만 반환 (마크다운 없이):
                             <span style={{fontSize:13,fontWeight:700}}>{r.name}</span>
                             <span style={{fontSize:10,color:"#9C8F78",marginLeft:6}}>{r.ticker}</span>
                           </div>
-                          {r.profitPct!=null && <span style={badge(r.profitPct>=0?"#5B8C5A":"#BC4B3C")}>
-                            {r.profitPct>=0?"+":""}{r.profitPct}%</span>}
+                          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                            {r.priceSource==="live"
+                              ? <span style={badge("#5B7A99")}>📡 실시간가</span>
+                              : <span style={badge("#9C8F78")}>AI 추정가</span>}
+                            {r.profitPct!=null && <span style={badge(r.profitPct>=0?"#5B8C5A":"#BC4B3C")}>
+                              {r.profitPct>=0?"+":""}{r.profitPct}%</span>}
+                          </div>
                         </div>
+                        {r.realPrice && (
+                          <div style={{fontSize:10,color:"#9C8F78",marginBottom:6}}>현재가 ₩{r.realPrice.toLocaleString()} 기준</div>
+                        )}
                         <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8}}>
                           <div style={S.orderChip}><span style={{color:"#9C8F78"}}>수량</span><b style={{color:"#BC4B3C"}}>{r.quantity}주</b></div>
                           <div style={S.orderChip}><span style={{color:"#9C8F78"}}>희망가</span><b style={{color:"#BC4B3C"}}>₩{r.limitPrice?.toLocaleString()}</b></div>
@@ -1012,8 +1062,16 @@ JSON만 반환 (마크다운 없이):
                             <span style={{fontSize:13,fontWeight:700}}>{r.name}</span>
                             <span style={{fontSize:10,color:"#9C8F78",marginLeft:6}}>{r.ticker}</span>
                           </div>
-                          {r.sector && <span style={badge("#5B8C5A")}>{r.sector}</span>}
+                          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                            {r.priceSource==="live"
+                              ? <span style={badge("#5B7A99")}>📡 실시간가</span>
+                              : <span style={badge("#9C8F78")}>AI 추정가</span>}
+                            {r.sector && <span style={badge("#5B8C5A")}>{r.sector}</span>}
+                          </div>
                         </div>
+                        {r.realPrice && (
+                          <div style={{fontSize:10,color:"#9C8F78",marginBottom:6}}>현재가 ₩{r.realPrice.toLocaleString()} 기준</div>
+                        )}
                         <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:8}}>
                           <div style={S.orderChip}><span style={{color:"#9C8F78"}}>수량</span><b style={{color:"#5B8C5A"}}>{r.quantity}주</b></div>
                           <div style={S.orderChip}><span style={{color:"#9C8F78"}}>희망가</span><b style={{color:"#5B8C5A"}}>₩{r.limitPrice?.toLocaleString()}</b></div>
@@ -1109,7 +1167,9 @@ JSON만 반환 (마크다운 없이):
                         {r.sector && <span style={badge("#5B7A99")}>{r.sector}</span>}
                         {r.style && <span style={badge("#D97757")}>{r.style}</span>}
                       </div>
-                      {r.marketCap && <div style={{fontSize:10,color:"#9C8F78",marginBottom:4}}>시총 {r.marketCap}</div>}
+                      {r.realPrice
+                        ? <div style={{fontSize:11,color:"#5B7A99",fontWeight:700,marginBottom:4}}>📡 실시간 ₩{r.realPrice.toLocaleString()}</div>
+                        : r.marketCap && <div style={{fontSize:10,color:"#9C8F78",marginBottom:4}}>시총 {r.marketCap}</div>}
                       <div style={{fontSize:11,color:"#7A6F5E",lineHeight:1.7}}>{r.reason}</div>
                       {r.note && <div style={{fontSize:10,color:"#C98A2C",marginTop:6}}>💡 {r.note}</div>}
                     </div>
