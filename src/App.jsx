@@ -235,9 +235,21 @@ export default function App() {
   };
 
   const opts = { driftTol, profitOnly, minProfitPct, sellOffset, buyOffset };
-  const sectorResults = calcRebalancing(holdings, targets, fx, opts);
+  // 목표 비중에 없는 섹터(예: 종목 추가 시 새 섹터를 만들었는데 목표 비중엔 등록 안 한 경우)가
+  // 계산에서 통째로 누락되지 않도록, 목표 0%인 "미분류" 섹터로 자동 포함시킴
+  const targetNames = new Set(targets.map(t => t.name));
+  const unclassifiedNames = [...new Set(holdings.map(h => h.sector).filter(Boolean))]
+    .filter(name => !targetNames.has(name));
+  const effectiveTargets = unclassifiedNames.length > 0
+    ? [...targets, ...unclassifiedNames.map(name => ({ name, targetPct: 0, color: "#9C8F78", unclassified: true }))]
+    : targets;
+  const sectorResults = calcRebalancing(holdings, effectiveTargets, fx, opts);
   const toKRW = (h) => (h.currency === "USD" ? h.evalAmt * fx : h.evalAmt);
   const totalKRW = holdings.reduce((s, h) => s + toKRW(h), 0);
+  const unclassifiedKRW = unclassifiedNames.reduce((sum, name) => {
+    const sec = sectorResults.find(s => s.name === name);
+    return sum + (sec?.currentAmtKRW || 0);
+  }, 0);
   const totalCost = holdings.reduce((s,h) => {
     const a = h.currency === "USD" ? (h.avgPrice||0)*fx : (h.avgPrice||0);
     return s + a * (h.quantity||0);
@@ -468,6 +480,28 @@ JSON만 반환 (마크다운 없이):
                 {heldTotal > 0 && <span style={badge("#C98A2C")}>⏸ {heldTotal}개 매도 보류</span>}
               </div>
             </div>
+
+            {unclassifiedNames.length > 0 && (
+              <div style={{...S.card, borderColor:"#C98A2C40", background:"#C98A2C08"}}>
+                <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+                  <span style={{fontSize:18,flexShrink:0}}>⚠️</span>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:12,fontWeight:700,color:"#C98A2C",marginBottom:4}}>
+                      목표 비중에 없는 섹터 {unclassifiedNames.length}개 (₩{fmtKRW(unclassifiedKRW)})
+                    </div>
+                    <div style={{fontSize:11,color:"#7A6F5E",lineHeight:1.8,marginBottom:10}}>
+                      <b>{unclassifiedNames.join(", ")}</b> 종목이 목표 비중 설정에 없어서, 도넛 차트·리밸런싱 계산에서 빠져 있어요. 목표 비중에 추가해주세요.
+                    </div>
+                    <button onClick={()=>{
+                      setTargets(prev=>[...prev, ...unclassifiedNames.map((name,i)=>({ name, targetPct:0, color: SECTOR_COLORS[(prev.length+i)%SECTOR_COLORS.length] }))]);
+                      setTab("rebalance");
+                    }} style={{background:"#C98A2C", color:"#FFFFFF", border:"none", borderRadius:99, padding:"7px 14px", fontFamily:"inherit", fontSize:11, fontWeight:700, cursor:"pointer"}}>
+                      목표 비중에 추가하기 (0%로)
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
 
             {holdings.length === 0 ? (
               <div style={{...S.card, textAlign:"center", padding:"36px 20px"}}>
