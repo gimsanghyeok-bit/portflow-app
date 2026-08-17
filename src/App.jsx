@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
 // ══════════════════════════════════════════════════════
-// 배포용: localStorage + /api/gemini 프록시 (Gemini 무료 API)
+// 배포용: localStorage + /api/claude 프록시 (Anthropic Claude API)
 // ══════════════════════════════════════════════════════
 const storage = {
   async get(key) {
@@ -13,47 +13,29 @@ const storage = {
   async delete(key) { localStorage.removeItem(key); return { key, deleted: true }; },
 };
 
-// Claude 메시지 형식({role, content:[{type:"image"|"text",...}]})을
-// Gemini 형식(contents:[{role, parts:[{inline_data|text}]}])으로 변환
-function toGeminiContents(messages) {
-  return messages.map(m => ({
-    role: m.role === "assistant" ? "model" : "user",
-    parts: Array.isArray(m.content)
-      ? m.content.map(c =>
-          c.type === "image"
-            ? { inline_data: { mime_type: c.source.media_type, data: c.source.data } }
-            : { text: c.text }
-        )
-      : [{ text: m.content }],
-  }));
-}
-
-// 이름은 callClaude로 유지 (호출부 5곳을 안 바꾸려고) — 내부는 Gemini 호출로 교체됨
 async function callClaude({ system, messages, max_tokens = 1000, tools }) {
-  const resp = await fetch("/api/gemini", {
+  const resp = await fetch("/api/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: toGeminiContents(messages),
-      systemInstruction: system,
-      maxOutputTokens: max_tokens,
-      useSearch: !!tools, // 웹 검색 도구 요청 여부만 서버로 전달 (형식은 서버가 구성)
-    }),
+    body: JSON.stringify({ system, messages, max_tokens, ...(tools ? { tools } : {}) }),
   });
-  if (!resp.ok) throw new Error(`API error: ${resp.status}`);
+  if (!resp.ok) {
+    const friendly = {
+      429: "요청이 너무 잦습니다. 잠시 후 다시 시도해주세요.",
+      500: "서버 설정 오류입니다. ANTHROPIC_API_KEY가 제대로 등록됐는지 확인해주세요.",
+      529: "Claude 서버가 일시적으로 과부하 상태입니다. 잠시 후 다시 시도해주세요.",
+    }[resp.status];
+    throw new Error(friendly || `API error: ${resp.status}`);
+  }
   return resp.json();
 }
 
-// 검색 도구를 쓰면 응답이 여러 text 파트로 쪼개져 올 수 있음.
-// 여러 조합(전체 이어붙임 / 마지막 파트 / 첫 파트)을 다 시도해서,
+// 웹 검색 도구를 쓰면 응답이 여러 text 블록으로 쪼개져 올 수 있음.
+// 여러 조합(전체 이어붙임 / 마지막 블록 / 첫 블록)을 다 시도해서,
 // 그중 "가장 내용이 많이 채워진" 결과를 채택 (일부 조각만 파싱되는 사고 방지)
 function parseAIJson(data) {
-  const parts = data?.candidates?.[0]?.content?.parts || [];
-  const blocks = parts.filter(p => typeof p.text === "string").map(p => p.text);
-  if (blocks.length === 0) {
-    const blockReason = data?.candidates?.[0]?.finishReason || data?.promptFeedback?.blockReason;
-    throw new Error(blockReason ? `응답 없음 (${blockReason})` : "응답에 텍스트가 없습니다");
-  }
+  const blocks = (data.content || []).filter(c => c.type === "text").map(c => c.text);
+  if (blocks.length === 0) throw new Error("응답에 텍스트가 없습니다");
   const candidates = [blocks.join("")];
   if (blocks.length > 1) { candidates.push(blocks[blocks.length - 1], blocks[0]); }
 
@@ -197,6 +179,7 @@ export default function App() {
   const [ocrStatus, setOcrStatus] = useState("idle");
   const [ocrStep, setOcrStep] = useState(0);
   const [parsed, setParsed] = useState([]);
+  const [ocrError, setOcrError] = useState(null);
   const fileRef = useRef(null);
 
   const [newsText, setNewsText] = useState("");
@@ -294,7 +277,7 @@ export default function App() {
   const handleFile = useCallback(async (file) => {
     if (!file) return;
     setImgSrc(URL.createObjectURL(file));
-    setOcrStatus("parsing");
+    setOcrStatus("parsing"); setOcrError(null);
     for (let i = 0; i < 4; i++) { setOcrStep(i); await delay(450); }
     try {
       const b64 = await new Promise((res, rej) => {
@@ -316,13 +299,14 @@ export default function App() {
         ]}]
       });
       const arr = parseAIJson(data);
+      if (!Array.isArray(arr)) throw new Error("응답이 배열 형식이 아닙니다");
       setParsed(arr.map(h => {
         const calc = (h.quantity||0) * (h.price||0);
         const ok = h.evalAmt > 0 ? Math.abs(calc - h.evalAmt) / h.evalAmt < 0.15 : false;
         return { ...h, currency: h.currency || "KRW", avgPrice: h.avgPrice || 0,
                  id: uid(), sanityOk: ok };
       }));
-    } catch (e) { setParsed([]); }
+    } catch (e) { setParsed([]); setOcrError(e.message || "알 수 없는 오류"); }
     setOcrStatus("done");
   }, []);
 
@@ -636,6 +620,7 @@ JSON만 반환 (마크다운 없이):
                 {parsed.length === 0 ? (
                   <div style={{background:"#BC4B3C18",border:"1px solid #BC4B3C40",borderRadius:10,padding:"12px 14px",fontSize:12,color:"#BC4B3C",marginBottom:12,lineHeight:1.8}}>
                     ⚠️ 종목을 읽지 못했습니다. 더 선명한 캡처로 다시 시도하거나, "보유" 탭에서 직접 입력해주세요.
+                    {ocrError && <div style={{fontSize:10,color:"#9C8F78",marginTop:6}}>(오류: {ocrError})</div>}
                   </div>
                 ) : (
                   <>
