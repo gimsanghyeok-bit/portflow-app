@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
 // ══════════════════════════════════════════════════════
-// 배포용: localStorage + /api/claude 프록시
+// 배포용: localStorage + /api/gemini 프록시 (Gemini 무료 API)
 // ══════════════════════════════════════════════════════
 const storage = {
   async get(key) {
@@ -13,22 +13,47 @@ const storage = {
   async delete(key) { localStorage.removeItem(key); return { key, deleted: true }; },
 };
 
+// Claude 메시지 형식({role, content:[{type:"image"|"text",...}]})을
+// Gemini 형식(contents:[{role, parts:[{inline_data|text}]}])으로 변환
+function toGeminiContents(messages) {
+  return messages.map(m => ({
+    role: m.role === "assistant" ? "model" : "user",
+    parts: Array.isArray(m.content)
+      ? m.content.map(c =>
+          c.type === "image"
+            ? { inline_data: { mime_type: c.source.media_type, data: c.source.data } }
+            : { text: c.text }
+        )
+      : [{ text: m.content }],
+  }));
+}
+
+// 이름은 callClaude로 유지 (호출부 5곳을 안 바꾸려고) — 내부는 Gemini 호출로 교체됨
 async function callClaude({ system, messages, max_tokens = 1000, tools }) {
-  const resp = await fetch("/api/claude", {
+  const resp = await fetch("/api/gemini", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ system, messages, max_tokens, ...(tools ? { tools } : {}) }),
+    body: JSON.stringify({
+      contents: toGeminiContents(messages),
+      systemInstruction: system,
+      maxOutputTokens: max_tokens,
+      useSearch: !!tools, // 웹 검색 도구 요청 여부만 서버로 전달 (형식은 서버가 구성)
+    }),
   });
   if (!resp.ok) throw new Error(`API error: ${resp.status}`);
   return resp.json();
 }
 
-// 웹 검색 도구를 쓰면 응답이 여러 text 블록으로 쪼개져 올 수 있음.
-// 여러 조합(전체 이어붙임 / 마지막 블록 / 첫 블록)을 다 시도해서,
+// 검색 도구를 쓰면 응답이 여러 text 파트로 쪼개져 올 수 있음.
+// 여러 조합(전체 이어붙임 / 마지막 파트 / 첫 파트)을 다 시도해서,
 // 그중 "가장 내용이 많이 채워진" 결과를 채택 (일부 조각만 파싱되는 사고 방지)
 function parseAIJson(data) {
-  const blocks = (data.content || []).filter(c => c.type === "text").map(c => c.text);
-  if (blocks.length === 0) throw new Error("응답에 텍스트가 없습니다");
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const blocks = parts.filter(p => typeof p.text === "string").map(p => p.text);
+  if (blocks.length === 0) {
+    const blockReason = data?.candidates?.[0]?.finishReason || data?.promptFeedback?.blockReason;
+    throw new Error(blockReason ? `응답 없음 (${blockReason})` : "응답에 텍스트가 없습니다");
+  }
   const candidates = [blocks.join("")];
   if (blocks.length > 1) { candidates.push(blocks[blocks.length - 1], blocks[0]); }
 
